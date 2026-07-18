@@ -167,6 +167,26 @@
 
   textarea#pasteArea{min-height:150px;resize:vertical;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11.5px;line-height:1.5;}
 
+  /* ---- file upload drop zone (sidebar, on navy) ---- */
+  .dropzone{
+    border:2px dashed rgba(255,255,255,.28);border-radius:12px;
+    padding:16px 14px;text-align:center;cursor:pointer;
+    background:rgba(255,255,255,.04);transition:border-color .15s,background .15s;
+  }
+  .dropzone:hover{border-color:var(--gold);background:rgba(242,169,60,.08);}
+  .dropzone.drag{border-color:var(--sunset);background:rgba(255,122,86,.12);}
+  .dropzone .dz-title{font-size:12.5px;font-weight:600;color:#eef3f6;}
+  .dropzone .dz-sub{font-size:10.5px;color:#9fb0c2;margin-top:3px;}
+  .dz-formats{margin-top:8px;display:flex;flex-wrap:wrap;gap:4px;justify-content:center;}
+  .dz-fmt{font-size:9.5px;font-weight:600;border-radius:20px;padding:2px 8px;}
+  .dz-fmt.good{background:rgba(120,210,170,.18);color:#8fe3c0;}
+  .dz-fmt.meh{background:rgba(242,169,60,.18);color:#f6cd8a;}
+  .dz-status{font-size:11px;margin-top:8px;line-height:1.4;color:#8fe3c0;display:none;}
+  .dz-status.show{display:block;}
+  .dz-status.err{color:#ffb59c;}
+  .or-line{display:flex;align-items:center;gap:10px;margin:14px 0 4px;color:#8fa0b3;font-size:11px;text-transform:uppercase;letter-spacing:.06em;}
+  .or-line::before,.or-line::after{content:"";flex:1;height:1px;background:rgba(255,255,255,.14);}
+
   .hint{
     font-size:11.5px;color:#8fa0b3;line-height:1.5;margin-top:6px;
   }
@@ -486,7 +506,7 @@
       </div>
       <div class="field">
         <label>Principal <span style="opacity:.6;font-weight:400;text-transform:none;">(back)</span></label>
-        <input type="text" id="principal" value="Elena C. Reyes, Ph.D.">
+        <input type="text" id="principal" placeholder="Principal full name">
       </div>
     </div>
 
@@ -499,7 +519,20 @@
     </div>
 
     <div class="field" style="margin-top:22px;">
-      <label>Paste Student Details</label>
+      <label>Upload Student List</label>
+      <div class="dropzone" id="dropZone">
+        <div class="dz-title">Drop a file here, or click to choose</div>
+        <div class="dz-sub">Google Sheets → File → Download → CSV or Excel</div>
+        <div class="dz-formats">
+          <span class="dz-fmt good">CSV ✓</span><span class="dz-fmt good">Excel ✓</span>
+          <span class="dz-fmt meh">PDF ~</span><span class="dz-fmt meh">Word ~</span>
+        </div>
+        <input type="file" id="fileInput" accept=".csv,.xlsx,.xls,.pdf,.docx" style="display:none">
+      </div>
+      <div class="dz-status" id="dzStatus"></div>
+      <div class="hint">CSV &amp; Excel read cleanly. PDF &amp; Word are best-effort — check the preview and fix any cell before generating.</div>
+
+      <div class="or-line">or paste</div>
       <textarea id="pasteArea" placeholder="Paste rows copied from your Google Sheet here (include the header row)."></textarea>
       <div class="hint">Tip: select the columns in your sheet (including the header), copy, then paste here — tabs and all. Works with the LRN response sheet as-is.</div>
     </div>
@@ -515,7 +548,7 @@
     </div>
 
     <button class="btn btn-primary" id="generateBtn">✨ Generate IDs</button>
-    <button class="btn btn-ghost" id="clearBtn">Clear all cards</button>
+    <button class="btn btn-ghost" id="clearBtn">Clear all</button>
     <div class="count-pill" id="countPill"></div>
   </aside>
 
@@ -560,6 +593,10 @@
 <div id="printLayout"></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<!-- file parsers (client-side, from CDN): SheetJS = csv/xlsx/xls, pdf.js = pdf, mammoth = docx -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
 <script>
 /* ---------------- Title-case helper ---------------- */
 function toTitleCase(str){
@@ -987,10 +1024,106 @@ document.getElementById('previewTbody').addEventListener('click', (e)=>{
   renderPreviewTable();
 });
 
+/* ---------------- File import (csv / xlsx / pdf / docx) ---------------- */
+function dzStatus(msg, isErr){
+  const el = document.getElementById('dzStatus');
+  el.textContent = msg;
+  el.className = 'dz-status show' + (isErr ? ' err' : '');
+}
+// rows (2D array) -> tab-separated text, then reuse the existing paste pipeline
+function rowsToTSV(rows){
+  return rows.filter(r=> r && r.some(c=> String(c==null?'':c).trim()!==''))
+             .map(r=> r.map(c=> String(c==null?'':c).replace(/\t/g,' ').replace(/\r?\n/g,' ').trim()).join('\t'))
+             .join('\n');
+}
+function ingestRows(rows, label){
+  const tsv = rowsToTSV(rows);
+  document.getElementById('pasteArea').value = tsv;
+  parseIntoPreview();
+  const n = previewRows.length;
+  if(n){
+    dzStatus(`Loaded ${n} row${n===1?'':'s'} from ${label}. Check the preview and edit any cell, then Generate IDs.`, false);
+  }else{
+    dzStatus(`No student rows found in ${label}. Try a CSV/Excel export, or paste the data instead.`, true);
+  }
+}
+function handleFile(file){
+  if(!file) return;
+  const name = file.name.toLowerCase();
+  dzStatus('Reading “'+file.name+'”…', false);
+  try{
+    if(name.endsWith('.csv')) return readSheet(file,'CSV');
+    if(name.endsWith('.xlsx')||name.endsWith('.xls')) return readSheet(file,'Excel');
+    if(name.endsWith('.pdf')) return readPdf(file);
+    if(name.endsWith('.docx')) return readDocx(file);
+    dzStatus('Unsupported file type. Use CSV, Excel, PDF, or Word (.docx).', true);
+  }catch(e){ dzStatus('Couldn\'t read that file: '+e.message, true); }
+}
+function readSheet(file, label){
+  if(typeof XLSX==='undefined'){ dzStatus('Spreadsheet reader didn\'t load (no internet?). Paste the data instead.', true); return; }
+  const rd=new FileReader();
+  rd.onload=()=>{ try{
+    const wb=XLSX.read(rd.result,{type:'array'});
+    const ws=wb.Sheets[wb.SheetNames[0]];
+    const rows=XLSX.utils.sheet_to_json(ws,{header:1,blankrows:false,defval:''});
+    ingestRows(rows,label);
+  }catch(e){ dzStatus('Couldn\'t parse the '+label+' file: '+e.message, true); } };
+  rd.onerror=()=> dzStatus('Failed to read the file.', true);
+  rd.readAsArrayBuffer(file);
+}
+function readPdf(file){
+  if(typeof pdfjsLib==='undefined'){ dzStatus('PDF reader didn\'t load (no internet?). Paste the data instead.', true); return; }
+  try{ pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'; }catch(e){}
+  const rd=new FileReader();
+  rd.onload=async()=>{ try{
+    const pdf=await pdfjsLib.getDocument({data:new Uint8Array(rd.result)}).promise;
+    const allRows=[];
+    for(let p=1;p<=pdf.numPages;p++){
+      const page=await pdf.getPage(p);
+      const tc=await page.getTextContent();
+      const lines={};
+      tc.items.forEach(it=>{ if(!it.str||!it.str.trim())return;
+        const y=Math.round(it.transform[5]), x=it.transform[4];
+        (lines[y]=lines[y]||[]).push({x,s:it.str}); });
+      Object.keys(lines).map(Number).sort((a,b)=>b-a).forEach(y=>{
+        const cells=lines[y].sort((a,b)=>a.x-b.x).map(o=>o.s.trim()).filter(Boolean);
+        if(cells.length) allRows.push(cells.length===1 ? cells[0].split(/\t|\s{2,}/).map(s=>s.trim()).filter(Boolean) : cells);
+      });
+    }
+    ingestRows(allRows,'PDF (best-effort)');
+  }catch(e){ dzStatus('Couldn\'t read the PDF: '+e.message+'. Try CSV/Excel instead.', true); } };
+  rd.readAsArrayBuffer(file);
+}
+function readDocx(file){
+  if(typeof mammoth==='undefined'){ dzStatus('Word reader didn\'t load (no internet?). Paste the data instead.', true); return; }
+  const rd=new FileReader();
+  rd.onload=()=>{ mammoth.convertToHtml({arrayBuffer:rd.result})
+    .then(res=>{
+      const doc=new DOMParser().parseFromString(res.value,'text/html');
+      const table=doc.querySelector('table'); const rows=[];
+      if(table){ table.querySelectorAll('tr').forEach(tr=>{
+          const cells=[...tr.querySelectorAll('th,td')].map(td=>td.textContent.trim());
+          if(cells.some(c=>c)) rows.push(cells); }); }
+      else{ doc.querySelectorAll('p').forEach(p=>{ const l=p.textContent.trim();
+          if(l) rows.push(l.split(/\t|\s{2,}/).map(s=>s.trim()).filter(Boolean)); }); }
+      ingestRows(rows,'Word (best-effort)');
+    })
+    .catch(e=> dzStatus('Couldn\'t read the Word file: '+e.message+'. Try CSV/Excel instead.', true)); };
+  rd.readAsArrayBuffer(file);
+}
+(function wireUpload(){
+  const zone=document.getElementById('dropZone'), input=document.getElementById('fileInput');
+  zone.addEventListener('click', ()=> input.click());
+  input.addEventListener('change', ()=>{ if(input.files[0]) handleFile(input.files[0]); input.value=''; });
+  ['dragenter','dragover'].forEach(ev=> zone.addEventListener(ev,e=>{e.preventDefault();zone.classList.add('drag');}));
+  ['dragleave','drop'].forEach(ev=> zone.addEventListener(ev,e=>{e.preventDefault();zone.classList.remove('drag');}));
+  zone.addEventListener('drop', e=>{ const f=e.dataTransfer.files[0]; if(f) handleFile(f); });
+})();
+
 /* ---------------- Wire up controls ---------------- */
 buildScheduleEditor();
 
-document.getElementById('pasteArea').addEventListener('input', parseIntoPreview);
+document.getElementById('pasteArea').addEventListener('input', ()=>{ parseIntoPreview(); document.getElementById('dzStatus').classList.remove('show'); });
 
 document.getElementById('generateBtn').addEventListener('click', ()=>{
   if(previewRows.length===0){
@@ -1002,7 +1135,13 @@ document.getElementById('generateBtn').addEventListener('click', ()=>{
 });
 
 document.getElementById('clearBtn').addEventListener('click', ()=>{
+  // full reset: paste box, uploaded file, preview table, cards
   students = [];
+  previewRows = [];
+  document.getElementById('pasteArea').value = '';
+  const fi = document.getElementById('fileInput'); if(fi) fi.value = '';
+  document.getElementById('dzStatus').classList.remove('show');
+  renderPreviewTable();
   renderCards();
 });
 
