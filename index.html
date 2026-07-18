@@ -429,30 +429,38 @@
   #printLayout{display:none;}
 
   @media print{
+    /* Page = US Letter, landscape, 0.5in margins — matches GRADE9.docx (pgSz 15840x12240 twips, pgMar 720). */
     @page{ size: 11in 8.5in; margin: 0.5in; }
     html, body{ background:#fff; margin:0; padding:0; }
     .app{ display:none !important; }
     #printLayout{ display:block; }
 
+    /* Printable area = 10in x 7.5in. Cards packed top-left exactly as the source doc
+       (col-start spacing ~2.611in, card 2.524in -> ~0.087in gap; rows near-flush). */
     #printLayout .print-page{
       width:10in; height:7.5in;
-      display:flex; align-items:center; justify-content:center;
+      display:grid;
+      grid-template-columns:repeat(4, 2.524in);
+      grid-template-rows:repeat(2, 3.657in);
+      column-gap:0.087in;   /* measured from source: 2.611in col pitch - 2.524in card */
+      row-gap:0;            /* source rows are flush (they slightly overlap in the doc; 0 keeps within 7.5in) */
+      justify-content:start;
+      align-content:start;
       page-break-after: always;
       break-after: page;
     }
     #printLayout .print-page:last-child{ page-break-after:auto; break-after:auto; }
 
+    /* legacy wrapper (kept in case markup nests a grid) */
     #printLayout .print-grid{
-      display:grid;
-      grid-template-columns:repeat(4, 2.524in);
-      grid-template-rows:repeat(2, 3.657in);
-      gap:0;
+      display:contents;
     }
-    #printLayout .print-grid .card{
+    #printLayout .print-page .card{
       width:2.524in; height:3.657in;
       aspect-ratio:auto;
       border-radius:0;
       box-shadow:none;
+      overflow:hidden;
       -webkit-print-color-adjust:exact; print-color-adjust:exact;
     }
     #printLayout .photo-box{ background:transparent; }
