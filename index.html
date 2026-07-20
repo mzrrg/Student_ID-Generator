@@ -280,6 +280,9 @@
     background:#fff;white-space:normal;overflow:visible;
   }
   .preview-table td[contenteditable]:empty:before{content:'—';color:#cbbf9e;font-style:italic;}
+  /* section cell filled from the Default Section (not typed per-student) */
+  .preview-table td.inherited{color:#b08d3c;font-style:italic;}
+  .preview-table td.inherited:after{content:' (default)';font-size:9.5px;color:#c9b483;font-style:normal;}
   .preview-remove-cell{width:24px;padding:4px !important;}
   .preview-remove-btn{
     width:20px;height:20px;border-radius:50%;
@@ -660,12 +663,57 @@ function gradeColorKey(grade){
 }
 
 /* ---------------- Title-case helper ---------------- */
+// Tokens whose exact capitalization must be preserved (initials, honorifics, suffixes).
+// Keyed by lowercase form -> canonical form. Applied AFTER normal title-casing.
+const CASE_PRESERVE = {
+  'phd':'PhD', 'ph.d':'Ph.D', 'ph.d.':'Ph.D.',
+  'edd':'EdD', 'ed.d':'Ed.D', 'ed.d.':'Ed.D.',
+  'mba':'MBA', 'md':'MD', 'rn':'RN', 'cpa':'CPA', 'llb':'LLB', 'dds':'DDS',
+  'jr':'Jr', 'sr':'Sr', 'ii':'II', 'iii':'III', 'iv':'IV', 'v':'V',
+  'dg':'DG'  // e.g. "Julieta DG. Madera" — a middle-name initial cluster
+};
+
 function toTitleCase(str){
   if(!str) return '';
-  return str.toLowerCase().split(/(\s+|-|'|\.|,)/).map(part=>{
+  const src = String(str);
+  // 1) normal title-case
+  let out = src.toLowerCase().split(/(\s+|-|'|\.|,)/).map(part=>{
     if(/^(\s+|-|'|\.|,)$/.test(part) || part==='') return part;
     return part.charAt(0).toUpperCase() + part.slice(1);
   }).join('').trim();
+
+  // 2) build a map of source tokens that were ALL-CAPS multi-letter clusters
+  //    (e.g. "DG", "JG", "PHD") so we can keep the user's intended capitalization.
+  const srcCaps = {};
+  const srcTokens = src.match(/[A-Za-z][A-Za-z.]*/g) || [];
+  const totalLetterTokens = srcTokens.length;
+  const allCapsTokens = srcTokens.filter(t=> { const L=t.replace(/\./g,''); return L===L.toUpperCase(); }).length;
+  // If the WHOLE string is all-caps (e.g. "MARIA CLARA SANTOS" typed in caps lock),
+  // don't preserve — just title-case it. Only preserve short caps clusters in an
+  // otherwise mixed-case name (the intentional initials like "DG", "PhD", "III").
+  const wholeThingAllCaps = totalLetterTokens>=2 && allCapsTokens===totalLetterTokens;
+  if(!wholeThingAllCaps){
+    // match standalone caps clusters only (not part of a hyphenated word like ANA-MARIE)
+    const standalone = src.match(/(?<![A-Za-z-])[A-Z][A-Z.]*(?![A-Za-z-])/g) || [];
+    standalone.forEach(tok=>{
+      const letters = tok.replace(/\./g,'');
+      if(letters.length>=2 && letters.length<=4){
+        srcCaps[tok.toLowerCase()] = tok;   // preserve exact source form (short standalone cluster)
+      }
+    });
+  }
+
+  // 3) restore: known honorifics/suffixes first, then any all-caps source cluster
+  out = out.replace(/[A-Za-z][A-Za-z.]*/g, (word)=>{
+    const lower = word.toLowerCase();
+    const bare = lower.replace(/\.+$/,'');
+    const hadDot = /\.$/.test(word);
+    if(CASE_PRESERVE[lower]) return CASE_PRESERVE[lower];
+    if(CASE_PRESERVE[bare]) return CASE_PRESERVE[bare] + (hadDot ? '.' : '');
+    if(srcCaps[lower]) return srcCaps[lower];   // preserve exactly as the user typed it
+    return word;
+  });
+  return out;
 }
 
 function digitsOnly(str){
@@ -765,14 +813,20 @@ function parsePaste(text){
     addressIdx = findCol(headerLower, ['address'], ['facebook','email']);
     guardianNameIdx = findCol(headerLower, ["guardian's name",'guardian name']);
     if(guardianNameIdx === -1) guardianNameIdx = findCol(headerLower, ["mother's name",'mother name']);
+    // fall back to a bare "guardian" / "parent" header (exclude an obvious contact col)
+    if(guardianNameIdx === -1) guardianNameIdx = findCol(headerLower, ['guardian','parent'], ['contact','cell phone','number','phone']);
+    // contact: first try near the guardian col, then search the whole header for a contact/phone column
     guardianContactIdx = -1;
     if(guardianNameIdx !== -1){
       for(let off=1; off<=5; off++){
         const c = guardianNameIdx+off;
-        if(c<headerLower.length && (headerLower[c].includes('cell phone') || headerLower[c].includes('contact'))){
+        if(c<headerLower.length && (headerLower[c].includes('cell phone') || headerLower[c].includes('contact') || headerLower[c].includes('phone') || headerLower[c].includes('number') || headerLower[c].includes('mobile'))){
           guardianContactIdx = c; break;
         }
       }
+    }
+    if(guardianContactIdx === -1){
+      guardianContactIdx = findCol(headerLower, ['contact number','contact no','cell phone','cellphone','mobile','contact','phone']);
     }
     dataLines = lines.slice(1);
   } else {
@@ -859,7 +913,7 @@ function frontCardInner(st, ctx, interactive){
   return `
     ${photoInner}
     <div class="ov ov-lrn ${st.lrn?'':'empty'}">${lrnHtml}</div>
-    <div class="ov ov-name">${sur ? `<div class="sur">${sur}</div><div class="giv">${giv}</div>` : `<div class="giv">${giv}</div>`}</div>
+    <div class="ov ov-name">${sur ? `<div class="sur">${sur},</div><div class="giv">${giv}</div>` : `<div class="giv">${giv}</div>`}</div>
     <div class="ov ov-section">${gradeSection}</div>
     <div class="ov ov-adviser">${ctx.adviser}</div>
   `;
@@ -1059,15 +1113,26 @@ function renderPreviewTable(){
   document.getElementById('previewCount').textContent =
     previewRows.length + ' row' + (previewRows.length===1?'':'s') + ' detected';
 
+  const defSection = document.getElementById('defaultSection').value.trim();
   tbody.innerHTML = previewRows.map((st, i) => {
     const {sur, giv} = splitName(st.rawName);
     const nameDisp = sur ? `${sur}, ${giv}` : (giv || st.rawName);
     const cell = (field, val) => `<td contenteditable="true" data-idx="${i}" data-field="${field}">${val||''}</td>`;
+    // Section: show the row's own value if it has one; otherwise show the Default Section
+    // as a light "inherited" hint so it's clear the default is being applied.
+    let sectionCell;
+    if(st.section){
+      sectionCell = `<td contenteditable="true" data-idx="${i}" data-field="section">${toTitleCase(st.section)}</td>`;
+    } else if(defSection){
+      sectionCell = `<td contenteditable="true" data-idx="${i}" data-field="section" class="inherited" title="From Default Section — type here to override">${toTitleCase(defSection)}</td>`;
+    } else {
+      sectionCell = `<td contenteditable="true" data-idx="${i}" data-field="section"></td>`;
+    }
     return `<tr>
       <td>${i+1}</td>
       ${cell('rawName', nameDisp)}
       ${cell('lrn', st.lrn)}
-      ${cell('section', st.section ? toTitleCase(st.section) : '')}
+      ${sectionCell}
       ${cell('address', st.address ? formatAddress(st.address) : '')}
       ${cell('guardianName', st.guardianName ? toTitleCase(st.guardianName) : '')}
       ${cell('guardianContact', st.guardianContact)}
@@ -1082,6 +1147,8 @@ document.getElementById('previewTbody').addEventListener('input', (e)=>{
   const idx = +td.dataset.idx;
   const field = td.dataset.field;
   if(previewRows[idx]) previewRows[idx][field] = td.textContent.trim();
+  // once the user types into an inherited section cell, it's now an explicit value
+  if(td.classList.contains('inherited')) td.classList.remove('inherited');
 });
 
 document.getElementById('previewTbody').addEventListener('click', (e)=>{
@@ -1320,6 +1387,10 @@ document.getElementById('testPrintBtn').addEventListener('click', ()=>{
 
 ['schoolYear','gradeLevel','defaultSection','adviser','chairperson','principal'].forEach(id=>{
   document.getElementById(id).addEventListener('input', ()=>{ if(students.length) renderCards(); });
+});
+// Default Section also drives the "inherited" hint in the preview table — refresh it live.
+document.getElementById('defaultSection').addEventListener('input', ()=>{
+  if(previewRows.length) renderPreviewTable();
 });
 document.getElementById('scheduleRows').addEventListener('input', ()=>{ if(students.length && showBacks) renderCards(); });
 
